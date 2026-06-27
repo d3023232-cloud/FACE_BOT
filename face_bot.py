@@ -32,6 +32,9 @@ if not ADMIN_ID:
     raise ValueError("ADMIN_ID not set in environment")
 
 ADMIN_ID = int(ADMIN_ID)
+DB_PATH = "/app/data/face_bot.db"
+
+os.makedirs("/app/data", exist_ok=True)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -41,13 +44,13 @@ client = AsyncOpenAI(
 )
 
 async def init_db():
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                free_used INTEGER DEFAULT 0,
+                free_balance INTEGER DEFAULT 0,
                 stars_balance INTEGER DEFAULT 0,
                 total_analyses INTEGER DEFAULT 0,
                 joined_at TEXT
@@ -81,29 +84,29 @@ async def init_db():
         await db.commit()
 
 async def get_or_create_user(user_id, username=None, first_name=None):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             if not row:
                 await db.execute(
-                    "INSERT INTO users (user_id, username, first_name, free_used, joined_at) VALUES (?, ?, ?, 0, ?)",
-                    (user_id, username, first_name, datetime.now().isoformat())
+                    "INSERT INTO users (user_id, username, first_name, free_balance, joined_at) VALUES (?, ?, ?, ?, ?)",
+                    (user_id, username, first_name, FREE_ANALYSES, datetime.now().isoformat())
                 )
                 await db.commit()
-                return {"user_id": user_id, "free_used": 0, "stars_balance": 0, "total_analyses": 0}
+                return {"user_id": user_id, "free_balance": FREE_ANALYSES, "stars_balance": 0, "total_analyses": 0}
             return {
                 "user_id": row[0], "username": row[1], "first_name": row[2],
-                "free_used": row[3], "stars_balance": row[4], "total_analyses": row[5]
+                "free_balance": row[3], "stars_balance": row[4], "total_analyses": row[5]
             }
 
 async def use_analysis(user_id):
-    async with aiosqlite.connect("face_bot.db") as db:
-        async with db.execute("SELECT free_used, stars_balance FROM users WHERE user_id = ?", (user_id,)) as cursor:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT free_balance, stars_balance FROM users WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
-            free_used, stars = row[0], row[1]
-            if free_used < FREE_ANALYSES:
+            free_balance, stars = row[0], row[1]
+            if free_balance > 0:
                 await db.execute(
-                    "UPDATE users SET free_used = free_used + 1, total_analyses = total_analyses + 1 WHERE user_id = ?",
+                    "UPDATE users SET free_balance = free_balance - 1, total_analyses = total_analyses + 1 WHERE user_id = ?",
                     (user_id,)
                 )
             elif stars >= PRICE_STARS:
@@ -117,7 +120,7 @@ async def use_analysis(user_id):
             return True
 
 async def add_stars(user_id, amount):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE users SET stars_balance = stars_balance + ? WHERE user_id = ?",
             (amount, user_id)
@@ -125,7 +128,7 @@ async def add_stars(user_id, amount):
         await db.commit()
 
 async def remove_stars(user_id, amount):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE users SET stars_balance = MAX(0, stars_balance - ?) WHERE user_id = ?",
             (amount, user_id)
@@ -133,23 +136,23 @@ async def remove_stars(user_id, amount):
         await db.commit()
 
 async def add_free(user_id, amount):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE users SET free_used = MAX(0, free_used - ?) WHERE user_id = ?",
+            "UPDATE users SET free_balance = free_balance + ? WHERE user_id = ?",
             (amount, user_id)
         )
         await db.commit()
 
 async def remove_free(user_id, amount):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE users SET free_used = free_used + ? WHERE user_id = ?",
+            "UPDATE users SET free_balance = MAX(0, free_balance - ?) WHERE user_id = ?",
             (amount, user_id)
         )
         await db.commit()
 
 async def save_analysis(user_id, data):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO analyses
             (user_id, eyes, nose, skin, cheekbones, lips, eyebrows, hair, symmetry, total, created_at)
@@ -162,7 +165,7 @@ async def save_analysis(user_id, data):
         await db.commit()
 
 async def save_payment(user_id, amount):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO payments (user_id, amount, created_at) VALUES (?, ?, ?)",
             (user_id, amount, datetime.now().isoformat())
@@ -170,7 +173,7 @@ async def save_payment(user_id, amount):
         await db.commit()
 
 async def get_stats():
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
 
         now = datetime.now()
@@ -210,7 +213,7 @@ async def get_stats():
         }
 
 async def get_user_by_id(user_id):
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as c:
             row = await c.fetchone()
@@ -219,9 +222,8 @@ async def get_user_by_id(user_id):
             return None
 
 async def get_user_by_username(username):
-    """Поиск пользователя по юзернейму (с @ или без)"""
     clean = username.lstrip("@").lower()
-    async with aiosqlite.connect("face_bot.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE LOWER(username) = ?", (clean,)) as c:
             row = await c.fetchone()
@@ -230,13 +232,11 @@ async def get_user_by_username(username):
             return None
 
 async def resolve_user(text):
-    """Распознаёт ID или username и возвращает пользователя"""
     text = text.strip()
     if text.startswith("@"):
         return await get_user_by_username(text)
     if text.isdigit():
         return await get_user_by_id(int(text))
-    # Попробуем как username без @
     return await get_user_by_username(text)
 
 async def check_human_face(image_bytes):
@@ -333,12 +333,13 @@ class AdminStates(StatesGroup):
     waiting_user_id = State()
     waiting_stars_amount = State()
 
-def main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📸 Анализ лица", callback_data="analyze")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
+def main_menu(user_id):
+    buttons = [
         [InlineKeyboardButton(text="⭐ Купить звёзды", callback_data="buy_menu")],
-    ])
+    ]
+    if user_id == ADMIN_ID:
+        buttons.append([InlineKeyboardButton(text="🔧 Админ-панель", callback_data="admin_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def buy_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -363,42 +364,24 @@ def admin_menu_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user = await get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    free_left = FREE_ANALYSES - user["free_used"]
     text = (
         f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
-        f"📸 Отправь фото лица — я оценю 8 параметров:\n"
-        f"👁 Глаза • 👃 Нос • ✨ Кожа • 🦴 Скулы\n"
-        f"💋 Губы • 🖤 Брови • 💇 Причёска • ⚖️ Симметрия\n\n"
-        f"🎁 Бесплатных анализов: <b>{max(0, free_left)}</b>\n"
+        f"📸 Я бот для анализа черт лица.\n"
+        f"Отправь фотку в любое время — я сделаю по ней анализ.\n\n"
+        f"🎁 Бесплатных анализов: <b>{user['free_balance']}</b>\n"
         f"⭐ Баланс: {user['stars_balance']} | Анализ: {PRICE_STARS}⭐"
     )
-    await message.answer(text, reply_markup=main_menu(), parse_mode="HTML")
+    await message.answer(text, reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
 
 @dp.callback_query(F.data == "main_menu")
 async def cb_main_menu(callback: CallbackQuery):
     user = await get_or_create_user(callback.from_user.id)
-    free_left = FREE_ANALYSES - user["free_used"]
     text = (
         f"👋 Главное меню\n\n"
-        f"🎁 Бесплатных: <b>{max(0, free_left)}</b>\n"
+        f"🎁 Бесплатных: <b>{user['free_balance']}</b>\n"
         f"⭐ Баланс: {user['stars_balance']} | Анализ: {PRICE_STARS}⭐"
     )
-    await callback.message.edit_text(text, reply_markup=main_menu(), parse_mode="HTML")
-    await callback.answer()
-
-@dp.callback_query(F.data == "profile")
-async def cb_profile(callback: CallbackQuery):
-    user = await get_or_create_user(callback.from_user.id)
-    free_left = max(0, FREE_ANALYSES - user["free_used"])
-    await callback.message.edit_text(
-        f"👤 <b>Профиль</b>\n\n"
-        f"🆔 ID: <code>{user['user_id']}</code>\n"
-        f"🎁 Бесплатных: {free_left}\n"
-        f"⭐ Баланс: {user['stars_balance']}\n"
-        f"📊 Всего анализов: {user['total_analyses']}",
-        reply_markup=main_menu(),
-        parse_mode="HTML"
-    )
+    await callback.message.edit_text(text, reply_markup=main_menu(callback.from_user.id), parse_mode="HTML")
     await callback.answer()
 
 @dp.callback_query(F.data == "buy_menu")
@@ -586,13 +569,12 @@ async def process_user_id(message: Message, state: FSMContext):
     action = data.get("action")
 
     if action == "find":
-        free_left = max(0, FREE_ANALYSES - user["free_used"])
         await message.answer(
             f"👤 <b>Пользователь</b>\n\n"
             f"🆔 ID: <code>{user['user_id']}</code>\n"
             f"👤 Имя: {user.get('first_name', '—')}\n"
             f"🔗 Юзернейм: @{user.get('username', '—')}\n"
-            f"🎁 Бесплатных: {free_left}\n"
+            f"🎁 Бесплатных: {user['free_balance']}\n"
             f"⭐ Баланс: {user['stars_balance']}\n"
             f"📊 Всего анализов: {user['total_analyses']}\n"
             f"📅 Регистрация: {user.get('joined_at', '—')[:10]}",
@@ -668,14 +650,13 @@ ERROR_MESSAGES = [
 @dp.message(F.photo)
 async def handle_photo(message: Message):
     user = await get_or_create_user(message.from_user.id)
-    free_left = max(0, FREE_ANALYSES - user["free_used"])
 
-    if free_left <= 0 and user["stars_balance"] < PRICE_STARS:
+    if user["free_balance"] <= 0 and user["stars_balance"] < PRICE_STARS:
         await message.answer(
             f"❌ Анализ недоступен\n\n"
             f"Нужно: {PRICE_STARS}⭐ | У тебя: {user['stars_balance']}⭐\n"
             f"Купить: /start",
-            reply_markup=buy_menu_kb()
+            reply_markup=main_menu(message.from_user.id)
         )
         return
 
@@ -705,26 +686,15 @@ async def handle_photo(message: Message):
             return
 
         user = await get_or_create_user(message.from_user.id)
-        free_left = max(0, FREE_ANALYSES - user["free_used"])
 
         await loading.edit_text(
             f"{result}\n\n"
-            f"📊 Бесплатных: {free_left} | ⭐ {user['stars_balance']}"
+            f"📊 Бесплатных: {user['free_balance']} | ⭐ {user['stars_balance']}"
         )
 
     except Exception as e:
         logging.error(f"Ошибка: {e}")
         await loading.edit_text("❌ Ошибка анализа. Попробуй другое фото.")
-
-@dp.message(F.text)
-async def handle_text(message: Message):
-    await message.answer(
-        "📸 Отправь фото <b>лица</b> для анализа\n\n"
-        "/start — меню\n"
-        "/profile — профиль\n"
-        "/admin — админ-панель (только админ)",
-        parse_mode="HTML"
-    )
 
 async def main():
     await init_db()
