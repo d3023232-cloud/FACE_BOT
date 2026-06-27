@@ -333,6 +333,18 @@ class AdminStates(StatesGroup):
     waiting_user_id = State()
     waiting_stars_amount = State()
 
+class BuyStates(StatesGroup):
+    waiting_custom_amount = State()
+
+async def safe_edit(callback, text, reply_markup=None):
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except Exception:
+        try:
+            await callback.message.answer(text, reply_markup=reply_markup)
+        except Exception:
+            pass
+
 def main_menu(user_id):
     buttons = [
         [InlineKeyboardButton(text="⭐ Купить звёзды", callback_data="buy_menu")],
@@ -381,24 +393,22 @@ async def cb_main_menu(callback: CallbackQuery):
         f"🎁 Бесплатных: <b>{user['free_balance']}</b>\n"
         f"⭐ Баланс: {user['stars_balance']} | Анализ: {PRICE_STARS}⭐"
     )
-    await callback.message.edit_text(text, reply_markup=main_menu(callback.from_user.id), parse_mode="HTML")
+    await safe_edit(callback, text, reply_markup=main_menu(callback.from_user.id))
     await callback.answer()
 
 @dp.callback_query(F.data == "buy_menu")
 async def cb_buy_menu(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "⭐ <b>Выберите количество звёзд:</b>",
-        reply_markup=buy_menu_kb(),
-        parse_mode="HTML"
-    )
+    await safe_edit(callback, "⭐ <b>Выберите количество звёзд:</b>", reply_markup=buy_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("buy_"))
-async def cb_buy(callback: CallbackQuery):
+async def cb_buy(callback: CallbackQuery, state: FSMContext):
     data = callback.data.replace("buy_", "")
     if data == "custom":
-        await callback.message.edit_text(
-            "✏️ Введите количество звёзд для покупки (число):",
+        await state.set_state(BuyStates.waiting_custom_amount)
+        await safe_edit(
+            callback,
+            "✏️ <b>Свой вариант</b>\n\nВведите количество звёзд для покупки (число):",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔙 Назад", callback_data="buy_menu")]
             ])
@@ -416,6 +426,30 @@ async def cb_buy(callback: CallbackQuery):
         provider_token=""
     )
     await callback.answer()
+
+@dp.message(BuyStates.waiting_custom_amount)
+async def process_custom_amount(message: Message, state: FSMContext):
+    try:
+        amount = int(message.text.strip())
+        if amount <= 0:
+            await message.answer("❌ Введите положительное число")
+            return
+        if amount > 10000:
+            await message.answer("❌ Максимум 10000 звёзд за раз")
+            return
+    except ValueError:
+        await message.answer("❌ Введите число")
+        return
+
+    await state.clear()
+    await message.answer_invoice(
+        title=f"⭐ {amount} звёзд",
+        description=f"Покупка {amount} звёзд для анализа лица",
+        payload=f"stars_{amount}",
+        currency="XTR",
+        prices=[LabeledPrice(label=f"{amount} звёзд", amount=amount)],
+        provider_token=""
+    )
 
 @dp.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
@@ -457,7 +491,7 @@ async def cb_admin_stats(callback: CallbackQuery):
         f"  • За всё время: <b>{stats['total_analyses']}</b>\n\n"
         f"💰 Куплено звёзд всего: <b>{stats['total_purchased']}</b> ⭐"
     )
-    await callback.message.edit_text(text, reply_markup=admin_menu_kb(), parse_mode="HTML")
+    await safe_edit(callback, text, reply_markup=admin_menu_kb())
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_give_stars")
@@ -467,12 +501,12 @@ async def cb_admin_give_stars(callback: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_user_id)
     await state.update_data(action="give_stars")
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         "⭐ <b>Выдать звёзды</b>\n\nВведите ID пользователя или @username:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_menu")]
-        ]),
-        parse_mode="HTML"
+        ])
     )
     await callback.answer()
 
@@ -483,12 +517,12 @@ async def cb_admin_take_stars(callback: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_user_id)
     await state.update_data(action="take_stars")
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         "⭐ <b>Забрать звёзды</b>\n\nВведите ID пользователя или @username:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_menu")]
-        ]),
-        parse_mode="HTML"
+        ])
     )
     await callback.answer()
 
@@ -499,12 +533,12 @@ async def cb_admin_give_free(callback: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_user_id)
     await state.update_data(action="give_free")
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         "🎁 <b>Выдать бесплатные анализы</b>\n\nВведите ID пользователя или @username:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_menu")]
-        ]),
-        parse_mode="HTML"
+        ])
     )
     await callback.answer()
 
@@ -515,12 +549,12 @@ async def cb_admin_take_free(callback: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_user_id)
     await state.update_data(action="take_free")
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         "🎁 <b>Забрать бесплатные анализы</b>\n\nВведите ID пользователя или @username:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_menu")]
-        ]),
-        parse_mode="HTML"
+        ])
     )
     await callback.answer()
 
@@ -531,12 +565,12 @@ async def cb_admin_find(callback: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_user_id)
     await state.update_data(action="find")
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         "🔍 <b>Найти пользователя</b>\n\nВведите ID или @username:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_menu")]
-        ]),
-        parse_mode="HTML"
+        ])
     )
     await callback.answer()
 
@@ -546,11 +580,7 @@ async def cb_admin_menu(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("❌ Нет доступа", show_alert=True)
         return
-    await callback.message.edit_text(
-        "🔧 <b>Админ-панель</b>",
-        reply_markup=admin_menu_kb(),
-        parse_mode="HTML"
-    )
+    await safe_edit(callback, "🔧 <b>Админ-панель</b>", reply_markup=admin_menu_kb())
     await callback.answer()
 
 @dp.message(AdminStates.waiting_user_id)
